@@ -1,0 +1,15 @@
+[project]
+name = "comfyq"
+description = "Quality-of-life tools: open model folders from nodes, one-click download of a workflow's missing models, and unpack subgraphs. Works with Nodes 1 and Nodes 2."
+version = "1.0.2"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/emperorofrome13/comfyQ"
+
+[tool.comfy]
+# Fill in your publisher id from https://registry.comfy.org before publishing to the Comfy Registry.
+PublisherId = ""
+DisplayName = "comfyQ"
+Icon = ""
