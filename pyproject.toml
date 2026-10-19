@@ -6,7 +6,7 @@ license = { file = "LICENSE" }
 dependencies = []
 
 [project.urls]
-Repository = "https://github.com/emperorofrome13/comfyQ"
+Repository = "https://github.com/emperorofrome13/ComfyQ"
 
 [tool.comfy]
 # Fill in your publisher id from https://registry.comfy.org before publishing to the Comfy Registry.
