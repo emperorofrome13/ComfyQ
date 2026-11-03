@@ -22,6 +22,43 @@ from aiohttp import web
 import folder_paths
 from server import PromptServer
 
+if sys.platform.startswith("win"):
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = wintypes.HMONITOR
+    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.c_void_p]
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.BringWindowToTop.argtypes = [wintypes.HWND]
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    SW_RESTORE = 9
+    MONITOR_DEFAULTTONEAREST = 2
+    SWP_NOZORDER = 0x0004
+    SWP_NOACTIVATE = 0x0010
+    VK_MENU = 0x12
+    KEYEVENTF_KEYUP = 0x0002
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+
 
 DOWNLOADS: dict[str, "DownloadJob"] = {}
 EXTRA_MODEL_EXTENSIONS = {
@@ -157,10 +194,87 @@ def _resolve_model_path(folder: str, path_index: int = 0, filename: str | None =
     return target if os.path.isdir(target) else root
 
 
+def _explorer_windows() -> dict[int, str]:
+    windows: dict[int, str] = {}
+
+    @WNDENUMPROC
+    def visit(hwnd, _):
+        name = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, name, 64)
+        if name.value == "CabinetWClass" and user32.IsWindowVisible(hwnd):
+            title = ctypes.create_unicode_buffer(1024)
+            user32.GetWindowTextW(hwnd, title, 1024)
+            windows[hwnd] = title.value
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return windows
+
+
+def _wait_for_explorer_window(path: str, before: dict[int, str]) -> int | None:
+    # Prefer the window this call opened; fall back to an existing window showing the folder.
+    titles = {os.path.basename(path.rstrip("\\/")), path}
+    start = time.monotonic()
+    while time.monotonic() - start < 5:
+        windows = _explorer_windows()
+        new = [hwnd for hwnd in windows if hwnd not in before]
+        if new:
+            return new[0]
+        if time.monotonic() - start > 2:
+            match = next((hwnd for hwnd, title in windows.items() if title in titles), None)
+            if match:
+                return match
+        time.sleep(0.1)
+    return None
+
+
+def _show_on_monitor_of(hwnd: int, anchor: int | None) -> None:
+    # Explorer started by a background process opens behind the browser and on the primary
+    # monitor. Center it on the monitor of the window the user clicked in and bring it forward.
+    info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+    if anchor and user32.GetMonitorInfoW(user32.MonitorFromWindow(anchor, MONITOR_DEFAULTTONEAREST), ctypes.byref(info)):
+        rect = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        work = info.rcWork
+        width = min(rect.right - rect.left, work.right - work.left)
+        height = min(rect.bottom - rect.top, work.bottom - work.top)
+        left = work.left + (work.right - work.left - width) // 2
+        top = work.top + (work.bottom - work.top - height) // 2
+        user32.SetWindowPos(hwnd, None, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE)
+
+    user32.ShowWindow(hwnd, SW_RESTORE)
+    foreground_thread = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+    this_thread = kernel32.GetCurrentThreadId()
+    attached = foreground_thread and foreground_thread != this_thread and user32.AttachThreadInput(this_thread, foreground_thread, True)
+    user32.BringWindowToTop(hwnd)
+    user32.SetForegroundWindow(hwnd)
+    if attached:
+        user32.AttachThreadInput(this_thread, foreground_thread, False)
+    if user32.GetForegroundWindow() != hwnd:
+        # A synthetic Alt press lifts Windows' foreground lock for the next SetForegroundWindow.
+        user32.keybd_event(VK_MENU, 0, 0, 0)
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+        user32.SetForegroundWindow(hwnd)
+
+
+def _open_folder_windows(path: str) -> None:
+    previous_dpi = user32.SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+    try:
+        anchor = user32.GetForegroundWindow()
+        before = _explorer_windows()
+        subprocess.Popen(["explorer.exe", os.path.normpath(path)])
+        hwnd = _wait_for_explorer_window(path, before)
+        if hwnd:
+            _show_on_monitor_of(hwnd, anchor)
+    finally:
+        if previous_dpi:
+            user32.SetThreadDpiAwarenessContext(previous_dpi)
+
+
 def _open_folder(path: str) -> None:
     os.makedirs(path, exist_ok=True)
     if sys.platform.startswith("win"):
-        os.startfile(path)  # type: ignore[attr-defined]
+        _open_folder_windows(path)
     elif sys.platform == "darwin":
         subprocess.Popen(["open", path])
     else:
@@ -246,7 +360,7 @@ def register_routes() -> None:
     async def info(request: web.Request) -> web.Response:
         return web.json_response(
             {
-                "version": "1.02",
+                "version": "1.03",
                 "process_id": os.getpid(),
                 "model_folders": _model_folders_payload(),
                 "paths": {
@@ -283,7 +397,7 @@ def register_routes() -> None:
                     int(data.get("path_index", 0)),
                     data.get("filename"),
                 )
-            _open_folder(path)
+            await asyncio.to_thread(_open_folder, path)
             return web.json_response({"ok": True, "path": path})
         except Exception as exc:
             return _json_error(str(exc))

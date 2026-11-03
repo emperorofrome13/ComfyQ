@@ -14,16 +14,22 @@ It adds no workflow nodes, so it never changes how a workflow runs or saves.
   beside each missing model on the node. Links come from the workflow's own model metadata
   (`properties.models`, which the built-in templates include). Models without a link get
   **Add URL**, which fills in the folder and filename so you only paste the link.
+  Each download shows a progress bar with size and speed. When the last one finishes,
+  comfyQ runs ComfyUI's own **Refresh Node Definitions** (the same as pressing R), so model
+  lists update and ComfyUI's missing-model errors clear without reloading the page.
 - **Folder icons** beside model pickers (`unet_name`, `clip_name`, `vae_name`, `ckpt_name`,
   `lora_name`, ControlNet, upscale, CLIP vision, style) open the folder that holds that
-  model, searching all of ComfyUI's configured model folders.
+  model, searching all of ComfyUI's configured model folders. On Windows the folder opens
+  in front of the browser, on the same monitor.
 - **Subgraph-aware.** Icons and menu items work on promoted widgets on a subgraph node and on
   loaders nested inside it.
 - **Unpack Subgraphs** flattens every subgraph (including nested ones) back into the
   workflow, keeping all nodes and links. **Remove Subgraphs** deletes them instead.
 - Download any model from a URL into a chosen model folder, with progress. Partial files
   are kept as `.part` until complete, and model lists refresh when a download finishes.
-- Open the input, output, and custom_nodes folders; copy the model names of selected nodes.
+- The panel shows only missing models and downloads. Everything else (open the input,
+  output, and custom_nodes folders, download from any URL, subgraph tools, copy selected
+  model names) is under **Advanced**.
 - The `comfyQ` button and panel can be dragged anywhere and remember their position.
   Everything is also under **Extensions → comfyQ** in the top menu, including
   **Reset Button Position**. Right-click a node or the canvas for comfyQ menu items.

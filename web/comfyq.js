@@ -22,6 +22,7 @@ const MODEL_WIDGET_FOLDERS = {
 const FOLDER_ICON_SIZE = 18;
 const FOLDER_ICON_MARGIN = 8;
 const PANEL_POSITION_KEY = "comfyQ.panelPosition";
+const ADVANCED_OPEN_KEY = "comfyQ.advancedOpen";
 const LAUNCHER_POSITION_KEY = "comfyQ.launcherPosition";
 const DRAG_THRESHOLD = 4;
 
@@ -142,7 +143,10 @@ async function comfyQFetch(path, options = {}) {
 }
 
 function toast(message, isError = false) {
-  if (app.ui?.dialog?.show) {
+  const toasts = app.extensionManager?.toast;
+  if (toasts?.add) {
+    toasts.add({ severity: isError ? "error" : "success", summary: "comfyQ", detail: message, life: isError ? 8000 : 4000 });
+  } else if (app.ui?.dialog?.show) {
     app.ui.dialog.show(message);
   } else {
     console[isError ? "error" : "log"](`[comfyQ] ${message}`);
@@ -554,7 +558,7 @@ function ensurePanel() {
     class: "comfyq-input",
     placeholder: "optional subfolder",
   });
-  const status = el("div", { class: "comfyq-status", text: "Ready" });
+  const status = el("div", { class: "comfyq-status" });
   const downloads = el("div", { class: "comfyq-downloads" });
   const missingSection = el("div", { class: "comfyq-missing" });
   state.downloadsEl = downloads;
@@ -567,8 +571,6 @@ function ensurePanel() {
       pathSelect.append(el("option", { value: index, text: `${index}: ${path}` }));
     }
   }
-
-  const setStatus = setPanelStatus;
 
   async function refreshInfo() {
     await loadInfo(true);
@@ -590,48 +592,55 @@ function ensurePanel() {
         url: urlInput.value.trim(),
         filename: filenameInput.value.trim(),
       });
+      urlInput.classList.remove("comfyq-needs-url");
     } catch (error) {
-      setStatus(error.message, true);
+      setPanelStatus(error.message, true);
     }
   }
 
+  const advanced = el("details", { class: "comfyq-advanced" }, [
+    el("summary", { text: "Advanced" }),
+    el("div", { class: "comfyq-advanced-body" }, [
+      el("label", { text: "Open folder" }),
+      el("div", { class: "comfyq-row" }, [
+        el("button", { text: "Input", onclick: () => openFolder({ special: "input" }) }),
+        el("button", { text: "Output", onclick: () => openFolder({ special: "output" }) }),
+        el("button", { text: "Custom Nodes", onclick: () => openFolder({ special: "custom_nodes" }) }),
+      ]),
+      el("label", { text: "Model folder" }),
+      folderSelect,
+      pathSelect,
+      el("div", { class: "comfyq-row" }, [
+        el("button", { text: "Open Folder", onclick: () => openFolder({ folder: folderSelect.value, path_index: Number(pathSelect.value || 0) }) }),
+        el("button", { text: "Refresh Models", onclick: () => refreshComfyModels().catch((error) => setPanelStatus(error.message, true)) }),
+      ]),
+      el("label", { text: "Download from a URL into the model folder above" }),
+      urlInput,
+      filenameInput,
+      subfolderInput,
+      el("button", { class: "comfyq-primary", text: "Download to Selected Folder", onclick: startDownload }),
+      el("label", { text: "Workflow" }),
+      el("div", { class: "comfyq-row" }, [
+        el("button", { text: "Unpack Subgraphs", title: "Flatten all subgraphs into the workflow, keeping their nodes", onclick: unpackAllSubgraphs }),
+        el("button", { text: "Remove Subgraphs", title: "Delete subgraph nodes and their contents", onclick: removeAllSubgraphs }),
+      ]),
+      el("button", { text: "Copy Selected Models", onclick: copySelectedModelNames }),
+    ]),
+  ]);
+  try { advanced.open = localStorage.getItem(ADVANCED_OPEN_KEY) === "true"; } catch {}
+  advanced.addEventListener("toggle", () => {
+    try { localStorage.setItem(ADVANCED_OPEN_KEY, String(advanced.open)); } catch {}
+  });
+
   const panel = el("div", { class: "comfyq-panel" }, [
-      el("div", { class: "comfyq-header" }, [
-      el("strong", { text: `comfyQ v${state.info?.version || "1.02"}` }),
+    el("div", { class: "comfyq-header" }, [
+      el("strong", { text: "comfyQ" }),
       el("button", { class: "comfyq-icon", title: "Close", text: "x", onclick: () => panel.classList.remove("open") }),
     ]),
-    el("div", { class: "comfyq-row" }, [
-      el("button", { text: "Input", onclick: () => openFolder({ special: "input" }) }),
-      el("button", { text: "Output", onclick: () => openFolder({ special: "output" }) }),
-      el("button", { text: "Custom Nodes", onclick: () => openFolder({ special: "custom_nodes" }) }),
-    ]),
     missingSection,
-    el("label", { text: "Model type" }),
-    folderSelect,
-    el("label", { text: "Target folder" }),
-    pathSelect,
-    el("div", { class: "comfyq-row" }, [
-      el("button", { text: "Open Folder", onclick: () => openFolder({ folder: folderSelect.value, path_index: Number(pathSelect.value || 0) }) }),
-      el("button", { text: "Refresh Models", onclick: async () => {
-        try {
-          await app.refreshComboInNodes();
-          await refreshInfo();
-          setStatus("Model lists refreshed.");
-        } catch (error) { setStatus(error.message, true); }
-      } }),
-    ]),
-    el("label", { text: "Download a model from a URL" }),
-    urlInput,
-    filenameInput,
-    subfolderInput,
-    el("button", { class: "comfyq-primary", text: "Download to Selected Folder", onclick: startDownload }),
-    el("div", { class: "comfyq-row" }, [
-      el("button", { text: "Unpack Subgraphs", title: "Flatten all subgraphs into the workflow, keeping their nodes", onclick: unpackAllSubgraphs }),
-      el("button", { text: "Remove Subgraphs", title: "Delete subgraph nodes and their contents", onclick: removeAllSubgraphs }),
-    ]),
-    el("button", { text: "Copy Selected Models", onclick: copySelectedModelNames }),
-    status,
     downloads,
+    status,
+    advanced,
   ]);
 
   const header = $(".comfyq-header", panel);
@@ -641,7 +650,8 @@ function ensurePanel() {
   folderSelect.addEventListener("change", refreshPathOptions);
   document.body.append(panel);
   state.panel = panel;
-  refreshInfo().catch((error) => setStatus(error.message, true));
+  renderDownloads();
+  refreshInfo().catch((error) => setPanelStatus(error.message, true));
   return panel;
 }
 
@@ -666,11 +676,12 @@ async function togglePanel(prefill = {}) {
   if (prefill.subfolder !== undefined) subfolderInput.value = prefill.subfolder;
   urlInput.classList.toggle("comfyq-needs-url", Boolean(prefill.needUrl));
   urlInput.placeholder = prefill.needUrl ? `Paste a download URL for ${prefill.needUrl}` : "https://.../model.safetensors";
+  if (prefill.needUrl || prefill.folder) $(".comfyq-advanced", panel).open = true;
   if (prefill.needUrl) {
     urlInput.value = "";
     urlInput.scrollIntoView({ block: "center" });
     urlInput.focus();
-    setPanelStatus(`No download link in this workflow for ${prefill.needUrl}. Paste one, then click Download to Selected Folder.`, true);
+    setPanelStatus(`No download link in this workflow for ${prefill.needUrl}. Paste one under Advanced, then click Download to Selected Folder.`, true);
   }
   renderMissingModels(true);
 }
@@ -678,18 +689,18 @@ async function togglePanel(prefill = {}) {
 function setPanelStatus(message, error = false) {
   const status = state.panel && $(".comfyq-status", state.panel);
   if (!status) return;
+  status.hidden = !message;
   status.textContent = message;
   status.dataset.error = error ? "true" : "false";
 }
 
 async function startJob(body) {
-  setPanelStatus("Starting download...");
   const job = await comfyQFetch("/comfyq/download", { method: "POST", body: JSON.stringify(body) });
   state.downloads.set(job.id, job);
-  renderDownloads(state.downloadsEl);
+  setPanelStatus("");
+  renderDownloads();
   renderMissingModels(true);
-  setPanelStatus(`Downloading ${job.filename}`);
-  pollDownload(job.id, state.downloadsEl);
+  pollDownload(job.id);
 }
 
 // Panel list of models this workflow needs but are not installed. Re-rendered only when the list changes.
@@ -736,40 +747,98 @@ function updateLauncher() {
   renderMissingModels();
 }
 
-function renderDownloads(container) {
+function formatBytes(bytes) {
+  if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(2)} GB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+function jobIsActive(job) {
+  return ["queued", "downloading"].includes(job.status);
+}
+
+function renderDownloads() {
+  const container = state.downloadsEl;
+  if (!container) return;
   const jobs = [...state.downloads.values()].reverse();
+  container.hidden = !jobs.length;
+  const finished = jobs.filter((job) => !jobIsActive(job));
   container.replaceChildren(
+    el("div", { class: "comfyq-missing-head" }, [
+      el("strong", { text: "Downloads" }),
+      finished.length ? el("button", { text: "Clear finished", onclick: () => {
+        for (const job of finished) state.downloads.delete(job.id);
+        renderDownloads();
+      } }) : null,
+    ]),
     ...jobs.map((job) => {
       const total = job.total_bytes || 0;
-      const pct = total ? Math.floor((job.bytes_downloaded / total) * 100) : 0;
-      const label = job.status === "downloading" ? (total ? `${pct}%` : `${(job.bytes_downloaded / 1048576).toFixed(1)} MB`) : job.status;
-      return el("div", { class: "comfyq-job" }, [
-        el("span", { text: job.filename }),
-        el("span", { text: label }),
+      const pct = total ? Math.min(100, (job.bytes_downloaded / total) * 100) : 0;
+      let detail;
+      if (job.status === "complete") detail = `Done · ${formatBytes(job.bytes_downloaded)}`;
+      else if (job.status === "error") detail = job.error || "Download failed";
+      else if (job.status === "queued") detail = "Starting...";
+      else {
+        const size = total ? `${formatBytes(job.bytes_downloaded)} of ${formatBytes(total)}` : formatBytes(job.bytes_downloaded);
+        const speed = job.speed ? ` · ${formatBytes(job.speed)}/s` : "";
+        detail = `${total ? `${Math.floor(pct)}% · ` : ""}${size}${speed}`;
+      }
+      return el("div", { class: "comfyq-job", "data-status": job.status }, [
+        el("div", { class: "comfyq-job-name", text: job.filename, title: job.destination }),
+        el("div", { class: "comfyq-bar" }, [
+          el("div", { style: { width: `${job.status === "complete" ? 100 : pct}%` }, class: total || job.status !== "downloading" ? "" : "comfyq-bar-unknown" }),
+        ]),
+        el("div", { class: "comfyq-job-detail", text: detail }),
       ]);
     }),
   );
 }
 
-async function pollDownload(id, container) {
-  let keepGoing = true;
-  while (keepGoing) {
+// ComfyUI's own "Refresh Node Definitions" (the R key): reloads model lists and re-runs its
+// missing-model check, clearing those errors, without reloading the page.
+async function refreshComfyModels() {
+  const command = app.extensionManager?.command;
+  if (command?.commands?.some((item) => item.id === "Comfy.RefreshNodeDefinitions")) {
+    await command.execute("Comfy.RefreshNodeDefinitions");
+  } else {
+    await app.refreshComboInNodes();
+  }
+  updateLauncher();
+  syncVueFolderIcons();
+}
+
+async function pollDownload(id) {
+  let previous = null;
+  for (;;) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     const job = await comfyQFetch(`/comfyq/downloads/${id}`);
+    const now = performance.now();
+    if (previous && job.bytes_downloaded > previous.bytes) {
+      const speed = ((job.bytes_downloaded - previous.bytes) / (now - previous.time)) * 1000;
+      job.speed = previous.speed ? previous.speed * 0.7 + speed * 0.3 : speed;
+    } else {
+      job.speed = previous?.speed;
+    }
+    previous = { bytes: job.bytes_downloaded, time: now, speed: job.speed };
     state.downloads.set(id, job);
-    renderDownloads(container);
-    keepGoing = ["queued", "downloading"].includes(job.status);
+    renderDownloads();
+    if (jobIsActive(job)) continue;
+
     if (job.status === "complete") {
+      state.refreshPending = true;
       await app.refreshComboInNodes();
-      setPanelStatus(`Downloaded ${job.filename}`);
       if (!state.panel?.classList.contains("open")) toast(`Downloaded ${job.filename}`);
-      updateLauncher();
+    } else {
+      toast(`${job.filename}: ${job.error || "Download failed"}`, true);
     }
-    if (job.status === "error") {
-      setPanelStatus(`${job.filename}: ${job.error || "Download failed"}`, true);
-      if (!state.panel?.classList.contains("open")) toast(job.error || "Download failed", true);
-      renderMissingModels(true);
+    // Once the queue is empty, run ComfyUI's full model refresh a single time.
+    if (state.refreshPending && ![...state.downloads.values()].some(jobIsActive)) {
+      state.refreshPending = false;
+      await refreshComfyModels();
+      toast("Downloads finished; models refreshed.");
     }
+    updateLauncher();
+    renderMissingModels(true);
+    return;
   }
 }
 
@@ -794,10 +863,10 @@ function injectStyles() {
           max-height: calc(100vh - 90px); overflow-y: auto;
         }
         .comfyq-panel.open { display: flex; }
-        .comfyq-header, .comfyq-row, .comfyq-job { display: flex; align-items: center; gap: 8px; }
+        .comfyq-header, .comfyq-row { display: flex; align-items: center; gap: 8px; }
         .comfyq-header { cursor: grab; touch-action: none; user-select: none; }
         .comfyq-header.dragging { cursor: grabbing; }
-        .comfyq-header, .comfyq-job { justify-content: space-between; }
+        .comfyq-header { justify-content: space-between; }
         .comfyq-panel button, .comfyq-input, .comfyq-select {
           min-height: 30px; border-radius: 6px; border: 1px solid var(--border-color, #555);
           background: var(--comfy-input-bg, #111); color: var(--fg-color, #eee);
@@ -807,8 +876,21 @@ function injectStyles() {
         .comfyq-icon { width: 28px; }
         .comfyq-input, .comfyq-select { width: 100%; padding: 4px 7px; box-sizing: border-box; }
         .comfyq-status[data-error="true"] { color: #ff8e8e; }
-        .comfyq-downloads { display: flex; flex-direction: column; gap: 4px; }
-        .comfyq-job { font-size: 12px; opacity: .9; }
+        .comfyq-downloads, .comfyq-advanced-body { display: flex; flex-direction: column; gap: 8px; }
+        .comfyq-downloads { padding: 8px; border-radius: 6px; background: rgba(127,127,127,.12); }
+        .comfyq-job { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+        .comfyq-job-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+        .comfyq-job-detail { opacity: .7; }
+        .comfyq-job[data-status="error"] .comfyq-job-detail { color: #ff8e8e; opacity: 1; }
+        .comfyq-bar { height: 6px; border-radius: 3px; background: rgba(127,127,127,.25); overflow: hidden; }
+        .comfyq-bar > div { height: 100%; background: #3fb27a; transition: width .4s; }
+        .comfyq-job[data-status="error"] .comfyq-bar > div { background: #c45; }
+        .comfyq-bar-unknown { width: 30% !important; animation: comfyq-slide 1.2s linear infinite; }
+        @keyframes comfyq-slide { from { margin-left: -30%; } to { margin-left: 100%; } }
+        .comfyq-advanced summary { cursor: pointer; opacity: .8; padding: 2px 0; }
+        .comfyq-advanced[open] summary { margin-bottom: 8px; }
+        .comfyq-advanced label { font-size: 12px; opacity: .75; }
+        .comfyq-status:empty, .comfyq-panel [hidden] { display: none !important; }
         .comfyq-launcher.dragging { cursor: grabbing; opacity: .85; }
         .comfyq-launcher.comfyq-has-missing { background: #2f6f55; border-color: #5fbf8f; color: #fff; }
         .comfyq-missing { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 6px; background: rgba(127,127,127,.12); }
